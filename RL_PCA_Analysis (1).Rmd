@@ -1,0 +1,444 @@
+---
+title: "PCA Analysis — Rocket League 3v3"
+subtitle: "Dimensionality Reduction of ballchasing.com Match Data"
+author: "Curtis Mesmer, David Meyers, Mia Lewis"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 10, fig.height = 6)
+```
+
+# Libraries
+
+```{r libraries}
+library(Hmisc)
+library(tidyverse)
+library(skimr)
+library(DataExplorer)
+library(DescTools)
+library(tidyverse)
+library(factoextra)
+```
+
+# Load Data
+
+Two files exported from `RL_Data_Preparation.Rmd`:
+
+- `pca_data.csv` — 58 numeric features only (input to PCA)
+- `working.csv` — full working dataset with rank, match result, etc.
+
+```{r load-data}
+pca_data <- read_csv("pca_data.csv", show_col_types = FALSE)
+working  <- read_csv("working.csv", show_col_types = FALSE)
+
+rank_labels <- c(
+  "bronze-1", "bronze-2", "bronze-3",
+  "silver-1", "silver-2", "silver-3",
+  "gold-1", "gold-2", "gold-3",
+  "platinum-1", "platinum-2", "platinum-3",
+  "diamond-1", "diamond-2", "diamond-3",
+  "champion-1", "champion-2", "champion-3",
+  "grand-champion-1", "grand-champion-2", "grand-champion-3"
+)
+
+working <- working %>%
+  mutate(rank_factor = factor(rank_tier,
+                              levels = 1:21,
+                              labels = rank_labels,
+                              ordered = TRUE),
+         match_result = as.factor(match_result))
+```
+
+## Verification
+
+```{r verify}
+cat("PCA data:", nrow(pca_data), "rows x", ncol(pca_data), "columns\n")
+cat("Working data:", nrow(working), "rows x", ncol(working), "columns\n")
+cat("Row counts match:", nrow(pca_data) == nrow(working), "\n")
+cat("Any NAs in PCA data:", sum(is.na(pca_data)), "\n")
+cat("All numeric:", all(sapply(pca_data, is.numeric)), "\n")
+```
+
+# Data Exploration
+```{r}
+skim_without_charts(working)
+```
+
+```{r}
+cat("Match result distribution:\n")
+table(working$match_result)
+
+cat("\nTeam colour distribution:\n")
+table(working$team_color)
+
+cat("\nRank tier distribution:\n")
+table(working$rank_tier, useNA = "ifany")
+```
+
+```{r}
+# Total obs
+nrow(working)  # 76,035
+
+# Match results
+working %>%
+  group_by(match_result) %>%
+  summarise(n = n(), pct = round(100 * n / sum(n), 1))
+
+# Rank distribution
+working %>%
+  group_by(rank_name) %>%
+  summarise(n = n(), pct = round(100 * n / sum(n), 1)) %>%
+  arrange(desc(n))
+
+# Rank groups (if you have rank_group variable)
+working %>%
+  group_by(rank_group) %>%
+  summarise(n = n(), pct = round(100 * n / sum(n), 1))
+```
+
+# Principal Component Analysis
+
+## Run PCA
+
+```{r run-pca}
+pca_result <- prcomp(pca_data, center = TRUE, scale. = TRUE)
+```
+
+## Variance Explained
+
+```{r variance-table}
+var_explained <- pca_result$sdev^2 / sum(pca_result$sdev^2)
+cum_var       <- cumsum(var_explained)
+
+var_table <- tibble(
+  PC             = paste0("PC", 1:ncol(pca_data)),
+  Eigenvalue     = round(pca_result$sdev^2, 4),
+  Pct_Variance   = round(var_explained * 100, 2),
+  Cumulative_Pct = round(cum_var * 100, 2)
+)
+
+print(var_table, n = 25)
+```
+
+```{r variance-thresholds}
+cat("PCs needed for 70% variance:", which(cum_var >= 0.70)[1], "\n")
+cat("PCs needed for 80% variance:", which(cum_var >= 0.80)[1], "\n")
+cat("PCs needed for 90% variance:", which(cum_var >= 0.90)[1], "\n")
+```
+
+## Scree Plot
+
+```{r scree-plot, fig.cap="Figure 1: Scree plot — variance explained by each principal component."}
+fviz_eig(pca_result,
+         ncp = 20,
+         addlabels = TRUE,
+         ylim = c(0, 25),
+         main = "Scree Plot — Variance Explained per PC")
+```
+
+## Correlation with Rank
+
+Pearson correlation between each PC score vector and the ordinal rank variable (1–21).
+
+```{r rank-correlations}
+rank_numeric <- as.numeric(working$rank_factor)
+
+rank_cors <- tibble(
+  PC = paste0("PC", 1:10),
+  Correlation_with_Rank = round(sapply(1:10, function(i) {
+    cor(pca_result$x[, i], rank_numeric, use = "complete.obs")
+  }), 4),
+  Abs_Correlation = round(abs(Correlation_with_Rank), 4),
+  Interpretation = case_when(
+    Abs_Correlation > 0.5  ~ "Strong rank effect",
+    Abs_Correlation > 0.3  ~ "Moderate rank effect",
+    Abs_Correlation > 0.15 ~ "Weak rank effect",
+    TRUE                   ~ "Minimal rank effect"
+  )
+)
+
+print(rank_cors)
+```
+## Correlation with Rank
+
+Pearson correlation between each PC score vector and the ordinal win variable (1-2).
+
+```{r win-correlations}
+win_numeric <- as.numeric(working$match_result)
+
+win_cors <- tibble(
+  PC = paste0("PC", 1:10),
+  Correlation_with_Win = round(sapply(1:10, function(i) {
+    cor(pca_result$x[, i], win_numeric, use = "complete.obs")
+  }), 4),
+  Abs_Correlation = round(abs(Correlation_with_Win), 4),
+  Interpretation = case_when(
+    Abs_Correlation > 0.5  ~ "Strong win effect",
+    Abs_Correlation > 0.3  ~ "Moderate win effect",
+    Abs_Correlation > 0.15 ~ "Weak win effect",
+    TRUE                   ~ "Minimal win effect"
+  )
+)
+
+print(win_cors)
+```
+
+## Top Loadings per PC
+
+```{r top-loadings}
+for (i in 1:10) {
+  cat("\n--- PC", i,
+      "(", round(var_explained[i] * 100, 1), "% variance",
+      "| rank r =", round(rank_cors$Correlation_with_Rank[i], 3),
+      ") ---\n")
+
+  loadings_i <- pca_result$rotation[, i]
+  sorted <- sort(loadings_i, decreasing = TRUE)
+
+  cat("\n  Top 5 POSITIVE loadings:\n")
+  top_pos <- head(sorted, 5)
+  for (j in seq_along(top_pos)) {
+    cat("    ", formatC(names(top_pos)[j], width = -55),
+        formatC(round(top_pos[j], 4), width = 8, format = "f"), "\n")
+  }
+
+  cat("\n  Top 5 NEGATIVE loadings:\n")
+  top_neg <- tail(sorted, 5)
+  for (j in seq_along(top_neg)) {
+    cat("    ", formatC(names(top_neg)[j], width = -55),
+        formatC(round(top_neg[j], 4), width = 8, format = "f"), "\n")
+  }
+}
+```
+
+## Variable Contribution Plots
+
+```{r contrib-plots, fig.height=5}
+for (i in 1:6) {
+  p <- fviz_contrib(pca_result, choice = "var", axes = i, top = 15,
+                    title = paste0("Top 15 Variables Contributing to PC", i))
+  print(p)
+}
+```
+
+## Component Descriptions
+
+Labels derived directly from loading structure. PCs 1–6 are described based on their top positive and negative loadings. PCs 7–16 are retained for the 80% variance threshold but not individually interpreted, as their lower variance contributions and increasingly complex loading structures make substantive labelling unreliable (Figueiredo et al., 2020).
+
+```{r component-descriptions}
+labels_table <- tibble(
+  PC = paste0("PC", 1:10),
+  Pct_Variance = round(var_explained[1:10] * 100, 1),
+  Rank_Cor = round(rank_cors$Correlation_with_Rank, 3),
+  Description = c(
+    "Movement Speed & Boost Collection (+ slow speed, defensive position, ground | - boost collected, boost stolen, big pads)",
+    "Boost Reserves & Ball Distance (+ avg boost amount, overfill, distance to ball | - low boost %, closest to ball)",
+    "Defensive vs. Offensive Field Position (+ defensive third/half, shots against | - offensive third/half)",
+    "Ball & Teammate Proximity (+ closest to ball, slow speed, score | - distance to ball, distance to mates)",
+    "Big Pad vs. Small Pad Boost Collection (+ full boost %, high boost bands | - small pad counts, small pad amounts)",
+    "Scoring Output (+ behind ball, goals, score, shooting % | - in front of ball, goals against)",
+    "PC7 — retained for variance, not individually interpreted",
+    "PC8 — retained for variance, not individually interpreted",
+    "PC9 — retained for variance, not individually interpreted",
+    "PC10 — retained for variance, not individually interpreted"
+  )
+)
+
+print(labels_table, width = Inf)
+```
+
+## Biplot
+
+```{r biplot, fig.width=12, fig.height=10, fig.cap="Figure 2: PCA biplot — variable loadings overlaid on PC1 vs PC2 scores."}
+fviz_pca_biplot(pca_result,
+                label = "var",
+                alpha.ind = 0.03,
+                col.var = "firebrick",
+                repel = TRUE,
+                title = "PCA Biplot — PC1 vs PC2 with Variable Loadings")
+```
+
+
+# PCA Score Visualisations
+
+```{r pca-scores-setup}
+assign_rank_group <- function(rf) {
+  case_when(
+    rf %in% c("bronze-1","bronze-2","bronze-3",
+              "silver-1","silver-2","silver-3",
+              "gold-1","gold-2","gold-3",
+              "platinum-1","platinum-2","platinum-3")                   ~ "Below Diamond",
+    rf %in% c("diamond-1","diamond-2","diamond-3")                      ~ "Diamond",
+    rf %in% c("champion-1","champion-2","champion-3")                   ~ "Champion",
+    rf %in% c("grand-champion-1","grand-champion-2","grand-champion-3") ~ "Grand Champion",
+    TRUE ~ "Other"
+  )
+}
+
+pca_scores <- as.data.frame(pca_result$x[, 1:10]) %>%
+  mutate(
+    rank_factor  = working$rank_factor,
+    match_result = working$match_result,
+    rank_group   = factor(assign_rank_group(rank_factor),
+      levels = c("Below Diamond", "Diamond", "Champion", "Grand Champion"),
+      ordered = TRUE)
+  )
+```
+
+## PC1 vs PC2 — Coloured by Rank
+
+```{r pc1-pc2-rank, fig.cap="Figure 3: PC1 vs PC2 coloured by rank."}
+ggplot(pca_scores, aes(x = PC1, y = PC2, color = rank_factor)) +
+  geom_point(alpha = 0.05, size = 0.3) +
+  labs(title = "PC1 vs PC2 — Coloured by Rank",
+       x = paste0("PC1: Movement Speed & Boost Collection (", round(var_explained[1] * 100, 1), "%)"),
+       y = paste0("PC2: Boost Reserves & Ball Distance (", round(var_explained[2] * 100, 1), "%)"),
+       color = "Rank") +
+  theme_minimal() +
+  theme(legend.position = "right")
+```
+
+## PC1 vs PC2 — Coloured by Match Result
+
+```{r pc1-pc2-result, fig.cap="Figure 4: PC1 vs PC2 coloured by match result."}
+ggplot(pca_scores, aes(x = PC1, y = PC2, color = match_result)) +
+  geom_point(alpha = 0.05, size = 0.3) +
+  labs(title = "PC1 vs PC2 — Coloured by Match Result",
+       x = paste0("PC1: Movement Speed & Boost Collection (", round(var_explained[1] * 100, 1), "%)"),
+       y = paste0("PC2: Boost Reserves & Ball Distance (", round(var_explained[2] * 100, 1), "%)"),
+       color = "Result") +
+  theme_minimal()
+```
+
+## PC1 Distribution by Rank Group
+
+```{r pc1-boxplot, fig.cap="Figure 5: PC1 score distribution by rank group."}
+ggplot(pca_scores, aes(x = rank_group, y = PC1, fill = rank_group)) +
+  geom_boxplot(outlier.alpha = 0.1, outlier.size = 0.3) +
+  labs(title = "PC1 Score Distribution by Rank Group",
+       x = "Rank Group", y = "PC1 (Movement Speed & Boost Collection)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+```
+
+## PC3 Distribution by Rank Group
+
+```{r pc3-boxplot, fig.cap="Figure 6: PC3 score distribution by rank group."}
+ggplot(pca_scores, aes(x = rank_group, y = PC3, fill = rank_group)) +
+  geom_boxplot(outlier.alpha = 0.1, outlier.size = 0.3) +
+  labs(title = "PC3 Score Distribution by Rank Group",
+       x = "Rank Group", y = "PC3 (Defensive vs. Offensive Field Position)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+```
+
+## PC1 vs PC3 — Coloured by Result
+
+```{r pc1-pc3-result, fig.cap="Figure 7: PC1 vs PC3 coloured by match result."}
+ggplot(pca_scores, aes(x = PC1, y = PC3, color = match_result)) +
+  geom_point(alpha = 0.05, size = 0.3) +
+  labs(title = "PC1 vs PC3 — Coloured by Match Result",
+       x = paste0("PC1: Movement Speed & Boost Collection (", round(var_explained[1] * 100, 1), "%)"),
+       y = paste0("PC3: Defensive vs. Offensive Field Position (", round(var_explained[3] * 100, 1), "%)"),
+       color = "Result") +
+  theme_minimal()
+```
+
+## Rank Group Counts
+
+```{r rank-counts}
+pca_scores %>%
+  count(rank_group) %>%
+  mutate(pct = round(n / sum(n) * 100, 1)) %>%
+  print()
+```
+
+## PC Score Means by Rank Group
+
+```{r pc-means-by-rank}
+pca_scores %>%
+  group_by(rank_group) %>%
+  summarise(
+    n = n(),
+    across(PC1:PC6, ~ round(mean(.), 2)),
+    .groups = "drop"
+  ) %>%
+  print(width = Inf)
+```
+
+## PC Score Means by Match Result
+
+```{r pc-means-by-result}
+pca_scores %>%
+  group_by(match_result) %>%
+  summarise(
+    n = n(),
+    across(PC1:PC6, ~ round(mean(.), 2)),
+    .groups = "drop"
+  ) %>%
+  print(width = Inf)
+```
+
+## PC Score Means by Rank Group and Match Result
+
+```{r pc-means-rank-result}
+pca_scores %>%
+  group_by(rank_group, match_result) %>%
+  summarise(
+    n = n(),
+    across(PC1:PC6, ~ round(mean(.), 3)),
+    .groups = "drop"
+  ) %>%
+  print(width = Inf, n = Inf)
+```
+
+
+# Summary
+
+```{r summary}
+cat("=================================================================\n")
+cat("PCA SUMMARY\n")
+cat("=================================================================\n\n")
+
+cat("Input: ", ncol(pca_data), "standardised features\n")
+cat("Observations: ", nrow(pca_data), "\n")
+cat("Method: prcomp(center = TRUE, scale. = TRUE) — unrotated\n\n")
+
+cat("Variance thresholds:\n")
+cat("  70%:", which(cum_var >= 0.70)[1], "PCs\n")
+cat("  80%:", which(cum_var >= 0.80)[1], "PCs\n")
+cat("  90%:", which(cum_var >= 0.90)[1], "PCs\n\n")
+
+cat("PC1 rank correlation: r =", round(rank_cors$Correlation_with_Rank[1], 3), "(moderate)\n")
+cat("PCs 2-6 rank correlations: |r| <", round(max(rank_cors$Abs_Correlation[2:6]), 3), "\n")
+cat("  → PCs 2-6 capture behavioural variation largely independent of rank\n\n")
+
+cat("Top 6 PCs account for",
+    round(cum_var[6] * 100, 1), "% of total variance\n")
+cat("16 PCs account for",
+    round(cum_var[16] * 100, 1), "% of total variance\n")
+```
+
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
+
+```{r run-all}
+
+# From your RMD output or re-running:
+names(working)
+```

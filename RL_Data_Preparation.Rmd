@@ -1,0 +1,376 @@
+---
+title: "Claude - RL Data Audit"
+subtitle: "Rocket League PCA & Clustering Study"
+author: "Curtis Mesmer, David Meyers, Mia Lewis"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Libraries
+
+```{r libraries}
+library(Hmisc)
+library(tidyverse)
+library(skimr)
+library(DataExplorer)
+library(DescTools)
+```
+
+# Load Raw Data
+
+```{r load-data}
+df <- read_csv("march_15_march_30_2025_data.csv", show_col_types = FALSE)
+
+cat("Raw data loaded\n")
+cat("Rows:", nrow(df), "\n")
+cat("Columns:", ncol(df), "\n")
+cat("Unique matches:", n_distinct(df$match_id), "\n")
+cat("Rows per match:", nrow(df) / n_distinct(df$match_id), "\n")
+```
+
+```{r parse-problems}
+# Check for any import parsing issues
+problems(df)
+```
+
+# Initial Inspection
+
+## Structure
+
+```{r structure}
+str(df, list.len = 20)
+```
+
+## Summary Statistics
+
+```{r skim-summary}
+skim_without_charts(df)
+```
+
+## Distributions
+
+```{r distributions}
+cat("Match result distribution:\n")
+table(df$match_result)
+
+cat("\nTeam colour distribution:\n")
+table(df$team_color)
+
+cat("\nRank tier distribution:\n")
+table(df$rank_tier, useNA = "ifany")
+```
+
+## Variable Types
+
+```{r var-types}
+working <- df
+table(vapply(working, function(x) class(x)[1], character(1)))
+```
+
+## Cardinality Check
+
+```{r cardinality}
+cardinality <- tibble(
+  variable  = names(working),
+  class     = sapply(working, function(x) class(x)[1]),
+  n_unique  = sapply(working, n_distinct),
+  pct_unique = round(sapply(working, n_distinct) / nrow(working) * 100, 2)
+) %>%
+  mutate(cardinality = case_when(
+    n_unique <= 5    ~ "very low",
+    n_unique <= 20   ~ "low",
+    n_unique <= 100  ~ "medium",
+    n_unique <= 1000 ~ "high",
+    TRUE             ~ "very high"
+  )) %>%
+  arrange(n_unique)
+
+print(cardinality, n = Inf)
+```
+
+# Drop Dead Columns
+
+`id_player_number` is entirely NA (confirmed via Google Colab inspection). Remove it before proceeding.
+
+```{r drop-dead}
+table(df$id_player_number, useNA = "ifany")
+
+working <- working %>%
+  select(-id_player_number)
+
+cat("Dropped id_player_number. Columns now:", ncol(working), "\n")
+```
+
+# De-Identification
+
+To satisfy IRB exemption criteria under 45 CFR §46.104(d)(4), all direct and indirect player identifiers are removed prior to analysis. This ensures that no individual can be re-identified from the analytic dataset. The researchers did not interact with, contact, or recruit any players, and will not attempt to re-identify any subject.
+
+```{r de-identify}
+working <- working %>%
+  select(-name, -id_id, -id_platform, -rank_id)
+
+cat("Removed identifying columns: name, id_id, id_platform, rank_id\n")
+cat("Columns now:", ncol(working), "\n")
+```
+
+# Missingness Assessment
+
+```{r missingness-overview}
+tot_val <- nrow(working) * ncol(working)
+tot_na  <- sum(is.na(working))
+cat(round(tot_na / tot_val * 100, 2), "% of the total data is missing\n")
+```
+
+```{r missingness-plot, fig.cap="Missing data profile."}
+plot_missing(working)
+```
+
+```{r missingness-by-column}
+working %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(cols = everything(), names_to = "Column", values_to = "NA_Count") %>%
+  filter(NA_Count > 0) %>%
+  arrange(desc(NA_Count)) %>%
+  mutate(Pct_Missing = round(NA_Count / nrow(working) * 100, 1)) %>%
+  print(n = Inf)
+```
+
+# Handle Missing Data
+
+Two variables have substantial missingness:
+
+- `mvp`: ~83.4% missing — dropped
+- `stats_positioning_goals_against_while_last_defender`: ~47.2% missing — dropped
+
+Both are structurally missing (NA means the event didn't occur for that player), not randomly missing. Imputation would misrepresent the data. After removing these two columns, remaining missingness is from unranked players (missing `rank_tier`, `rank_name`, etc.), which are removed via `drop_na()`.
+
+```{r handle-missing}
+working <- working %>%
+  select(-mvp, -stats_positioning_goals_against_while_last_defender) %>%
+  drop_na()
+
+cat("After removing high-missingness columns and dropping incomplete rows:\n")
+cat("Rows:", nrow(working), "\n")
+cat("Columns:", ncol(working), "\n")
+cat("Unique matches:", n_distinct(working$match_id), "\n")
+cat("Remaining NAs:", sum(is.na(working)), "\n")
+```
+
+**Methodology note:** The original dataset contained `r format(nrow(df), big.mark = ",")` player observations. Two variables with over 40% missing values were removed. Observations with missing rank data (unranked players) were excluded, resulting in a final sample of `r format(nrow(working), big.mark = ",")` player observations across approximately `r format(n_distinct(working$match_id), big.mark = ",")` matches.
+
+# Create Rank Factor
+
+```{r rank-factor}
+rank_labels <- c(
+  "bronze-1", "bronze-2", "bronze-3",
+  "silver-1", "silver-2", "silver-3",
+  "gold-1", "gold-2", "gold-3",
+  "platinum-1", "platinum-2", "platinum-3",
+  "diamond-1", "diamond-2", "diamond-3",
+  "champion-1", "champion-2", "champion-3",
+  "grand-champion-1", "grand-champion-2", "grand-champion-3"
+)
+
+working <- working %>%
+  mutate(rank_factor = factor(rank_tier,
+                              levels = 1:21,
+                              labels = rank_labels,
+                              ordered = TRUE))
+
+cat("Rank distribution:\n")
+table(working$rank_factor)
+```
+
+```{r rank-verify}
+working %>%
+  count(rank_tier, rank_name, rank_factor) %>%
+  arrange(rank_tier) %>%
+  print(n = Inf)
+```
+
+# Set Variable Types
+
+```{r set-types}
+working <- working %>%
+  mutate(
+    # Character — high-cardinality metadata
+    match_id    = as.character(match_id),
+    car_name    = as.character(car_name),
+    map_name    = as.character(map_name),
+
+    # Factor — low-cardinality categorical
+    team_color    = as.factor(team_color),
+    match_result  = as.factor(match_result),
+    rank_division = as.factor(rank_division),
+
+    # Logical
+    stats_core_mvp = as.logical(stats_core_mvp)
+  )
+
+# Verify
+tibble(
+  variable = names(working),
+  class    = sapply(working, function(x) class(x)[1]),
+  n_unique = sapply(working, n_distinct)
+) %>% print(n = Inf)
+```
+
+# Post-Cleaning Summary
+
+```{r post-clean-skim}
+skim_without_charts(working)
+```
+
+# Winsorise Outliers
+
+All numeric performance features are winsorised at the 1st and 99th percentiles to cap extreme values without reducing sample size. Applied before PCA feature selection so the exported data is clean.
+
+```{r winsorise}
+numeric_features <- working %>%
+  select(starts_with("stats_")) %>%
+  select(where(is.numeric)) %>%
+  names()
+
+cat("Winsorising", length(numeric_features), "numeric features at 1st/99th percentiles\n")
+
+working <- working %>%
+  mutate(across(all_of(numeric_features),
+                ~ Winsorize(., val = quantile(., probs = c(0.01, 0.99), na.rm = TRUE))))
+
+cat("Winsorisation complete.\n")
+```
+
+# PCA Variable Selection
+
+Prior to PCA, variables were systematically excluded across four categories, following the requirements that PCA operates on continuous, quantitative, non-redundant features without reference to any response variable (James et al., 2021).
+
+**1. Identifiers and metadata:** `match_id`, `date`, `rank_name`, `map_name`, `car_name` — nominal variables with no numerical magnitude. (Note: `name`, `id_id`, `id_platform`, and `rank_id` were already removed during de-identification.)
+
+**2. Match structure and outcomes:** `team_color`, `match_result`, `duration`, `start_time`, `end_time` — outcome labels and administrative variables reflecting match structure rather than player behaviour.
+
+**3. Rank and player configuration:** `rank_tier`, `rank_division`, `rank_factor` (retained for grouping but excluded from PCA), and all camera/car settings (`camera_fov`, `camera_height`, `camera_pitch`, `camera_distance`, `camera_stiffness`, `camera_swivel_speed`, `camera_transition_speed`, `steering_sensitivity`, `car_id`) — hardware/aesthetic preferences unrelated to in-game performance. `stats_core_mvp` excluded as a derivative outcome label.
+
+**4. Redundant time-based variables:** For each behavioural dimension, the dataset contains both raw time (seconds) and percentage (proportion of match time) versions. These pairs are linearly dependent by construction. The percentage versions were retained because they are normalised for match duration, making them comparable across matches of differing lengths. Raw time versions excluded:
+
+- `stats_boost_time_zero_boost`, `stats_boost_time_full_boost`, `stats_boost_time_boost_0_25` through `_75_100`
+- `stats_movement_time_supersonic_speed`, `stats_movement_time_boost_speed`, `stats_movement_time_slow_speed`, `stats_movement_time_ground`, `stats_movement_time_low_air`, `stats_movement_time_high_air`, `stats_movement_time_powerslide`
+- `stats_positioning_time_defensive_third`, `stats_positioning_time_neutral_third`, `stats_positioning_time_offensive_third`, `stats_positioning_time_defensive_half`, `stats_positioning_time_offensive_half`, `stats_positioning_time_behind_ball`, `stats_positioning_time_infront_ball`, `stats_positioning_time_most_back`, `stats_positioning_time_most_forward`, `stats_positioning_time_closest_to_ball`, `stats_positioning_time_farthest_from_ball`
+
+```{r pca-variable-selection}
+remove_for_pca <- c(
+  # Identifiers/Metadata (name, id_id, id_platform, rank_id already removed)
+  "match_id", "date",
+  "rank_name", "map_name", "car_name",
+
+  # Match structure
+  "team_color", "match_result", "duration", "start_time", "end_time",
+
+  # Rank variables (retained for grouping, excluded from PCA)
+  "rank_tier", "rank_division", "rank_factor",
+
+  # Player config
+  "car_id", "camera_fov", "camera_height", "camera_pitch",
+  "camera_distance", "camera_stiffness", "camera_swivel_speed",
+  "camera_transition_speed", "steering_sensitivity",
+
+  # Outcome/derivative
+  "stats_core_mvp",
+
+  # Redundant time columns (keeping percent versions)
+  "stats_boost_time_zero_boost",
+  "stats_boost_time_full_boost",
+  "stats_boost_time_boost_0_25",
+  "stats_boost_time_boost_25_50",
+  "stats_boost_time_boost_50_75",
+  "stats_boost_time_boost_75_100",
+  "stats_movement_time_supersonic_speed",
+  "stats_movement_time_boost_speed",
+  "stats_movement_time_slow_speed",
+  "stats_movement_time_ground",
+  "stats_movement_time_low_air",
+  "stats_movement_time_high_air",
+  "stats_movement_time_powerslide",
+  "stats_positioning_time_defensive_third",
+  "stats_positioning_time_neutral_third",
+  "stats_positioning_time_offensive_third",
+  "stats_positioning_time_defensive_half",
+  "stats_positioning_time_offensive_half",
+  "stats_positioning_time_behind_ball",
+  "stats_positioning_time_infront_ball",
+  "stats_positioning_time_most_back",
+  "stats_positioning_time_most_forward",
+  "stats_positioning_time_closest_to_ball",
+  "stats_positioning_time_farthest_from_ball"
+)
+
+pca_data <- working %>%
+  select(-all_of(remove_for_pca))
+```
+
+# Verification
+
+```{r verify-dimensions}
+cat("PCA input dimensions:", nrow(pca_data), "rows x", ncol(pca_data), "columns\n")
+```
+
+```{r verify-variables}
+cat("Variables entering PCA:\n")
+names(pca_data)
+```
+
+```{r verify-na}
+cat("Any NAs?", sum(is.na(pca_data)), "\n")
+```
+
+```{r verify-numeric}
+cat("All numeric?", all(sapply(pca_data, is.numeric)), "\n")
+```
+
+```{r verify-zero-variance}
+zero_var <- pca_data %>%
+  summarise(across(everything(), var)) %>%
+  pivot_longer(everything(), names_to = "var", values_to = "variance") %>%
+  filter(variance == 0)
+
+if (nrow(zero_var) == 0) {
+  cat("No zero-variance columns. Good.\n")
+} else {
+  cat("Zero-variance columns found (remove before PCA):\n")
+  print(zero_var)
+}
+```
+
+```{r verify-skim-final}
+skim_without_charts(pca_data)
+```
+
+# Export
+
+```{r export}
+write_csv(pca_data, "pca_data.csv")
+write_csv(working, "working.csv")
+
+cat("Exported:\n")
+cat("  pca_data.csv —", nrow(pca_data), "x", ncol(pca_data), "(PCA input)\n")
+cat("  working.csv  —", nrow(working), "x", ncol(working), "(full working dataset with rank/result)\n")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
+
+```{r Running All, include=FALSE}
+
+```

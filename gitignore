@@ -1,0 +1,14 @@
+# R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# Knitted output
+*.html
+*.nb.html
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

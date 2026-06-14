@@ -1,0 +1,15 @@
+Creative Commons Legal Code
+
+CC0 1.0 Universal
+
+The data files in this repository (pca_data.csv, working.csv) are dedicated
+to the public domain under the Creative Commons CC0 1.0 Universal Public
+Domain Dedication.
+
+Full legal text: https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+In short: you can copy, modify, distribute, and use this data, even for
+commercial purposes, without asking permission.
+
+Underlying source data originates from the ballchasing.com public API
+(https://ballchasing.com), used here in de-identified, processed form.
