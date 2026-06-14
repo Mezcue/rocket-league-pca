@@ -19,11 +19,12 @@ Raw match replay data were retrieved via the ballchasing.com public API. All dir
 
 ## Reproducing the analysis
 
-1. Open `RL_PCA_Analysis.Rmd` in R/RStudio.
-2. Required packages: `tidyverse`, `DescTools`, `factoextra`, `skimr`, `DataExplorer`, `Hmisc`.
-3. Knit — it reads `pca_data.csv` and `working.csv` directly from this directory.
+1. Unzip pca_data.csv.zip and working.csv.zip in this directory (produces pca_data.csv and working.csv).
+2. Open RL_PCA_Analysis.Rmd in R/RStudio.
+3. Required packages: tidyverse, DescTools, factoextra, skimr, DataExplorer, Hmisc.
+4. Knit — it reads pca_data.csv and working.csv directly from this directory.
 
-`RL_Data_Preparation.Rmd` documents the cleaning pipeline from the raw API export but requires that raw file (not included here, see Data provenance) to re-run end to end; its outputs (`pca_data.csv`, `working.csv`) are provided directly.
+RL_Data_Preparation.Rmd documents the cleaning pipeline from the raw API export but requires that raw file (not included here, see Data provenance) to re-run end to end; its outputs (pca_data.csv, working.csv) are provided directly.
 
 ## License
 
